@@ -1,6 +1,7 @@
 """
 export_divergence_cases.py
-导出指定 query 的三路 top-3 文档信息，用于 3.6.5 案例表。
+Exports the top-3 documents from each of the three signals for the specified queries,
+for use in the case study table of Section 3.6.5.
 """
 import json
 import pickle
@@ -148,7 +149,7 @@ def main():
 
     # builder for hash/SVD query
     print("Loading HypergraphBuilder...")
-    builder = HypergraphBuilder(cooccurrence_path="/home/hong/GNN/mesh_cooccurrence.pkl")
+    builder = HypergraphBuilder(cooccurrence_path="./mesh_cooccurrence.pkl")
 
     def get_query_emb(query_text, query_mesh):
         if query_mesh and builder.mesh_embeddings is not None:
@@ -158,7 +159,7 @@ def main():
                 return np.mean(vecs, axis=0).astype(np.float32)
         return builder._hash_text_to_vector(query_text.lower(), 200)
 
-    # 遍历目标 query
+    # Iterate over target queries
     results = {}
     for target_pmid in args.target_pmids:
         if target_pmid not in pmid_to_doc:
@@ -169,7 +170,7 @@ def main():
         q_text = q_doc["title"]
         q_mesh = q_doc["mesh"]
 
-        # 排除 query 自身
+        # Exclude the query itself
         valid_idx = [i for i, p in enumerate(pmids) if p != target_pmid]
 
         # BM25
@@ -182,12 +183,12 @@ def main():
             q_tensor = torch.tensor(q_emb_np).unsqueeze(0).to(device)
             q_proj = model.query_proj(q_tensor)
             s_gnn = torch.mm(q_proj, doc_embs.to(device).t()).cpu().numpy().flatten()
-        # 对齐到 pmids 顺序
+        # Align to the pmids order
         s_gnn_full = np.zeros(len(pmids), dtype=np.float32)
         for i, p in enumerate(valid_pmids):
             s_gnn_full[pmids.index(p)] = s_gnn[i]
 
-        # 取 top-3
+        # Take top-3
         def get_top3(scores):
             order = np.argsort(scores)[::-1]
             top = []
