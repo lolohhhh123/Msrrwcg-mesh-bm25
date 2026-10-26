@@ -1,7 +1,8 @@
 """
 sensitivity_analysis.py
-对 2.5.4 的 3 个阈值做网格敏感性分析，验证 AI × GRN 缺口的稳健性。
-复用 extract_concept_level_gaps.py 的 Step 1–7，只替换 Step 8–10。
+Performs a grid sensitivity analysis over the 3 thresholds,
+to verify the robustness of the AI × GRN gap.
+Reuses Steps 1-7 of extract_concept_level_gaps.py, only replacing Steps 8-10.
 """
 import json
 import pickle
@@ -18,30 +19,30 @@ from evaluate_baselines import clean_text
 
 
 # ============================================================
-# 配置
+# Configuration
 # ============================================================
-CORPUS_PATH = "/home/hong/GNN/ai_ad/ai_ad_corpus_fixed.jsonl"
+CORPUS_PATH = "./ai_ad/ai_ad_corpus_fixed.jsonl"
 MINE_THE_GAP_PATH = "mine_the_gap_pairs.tsv"
-COOC_PATH = "/home/hong/GNN/mesh_cooccurrence.pkl"
-CACHE_PATH = "sensitivity_cache.pkl"          # 中间结果缓存，避免重复跑 Step 1-7
+COOC_PATH = "./mesh_cooccurrence.pkl"
+CACHE_PATH = "sensitivity_cache.pkl"          # Cache for intermediate results, to avoid rerunning Steps 1-7
 OUTPUT_CSV = "sensitivity_analysis.csv"
 OUTPUT_JSON = "sensitivity_analysis.json"
 
-# 目标：AI × GRN 的 MeSH IDs（从之前的对话中确认）
+# Target: AI × GRN MeSH IDs (confirmed from earlier conversations)
 AI_MESH = "meshd001185"   # Artificial Intelligence
 GRN_MESH = "meshd053263"  # Gene Regulatory Networks
 
-# 阈值网格（4 × 4 × 4 = 64 种组合）
-E_MIN_GRID = [1, 3, 5, 10]       # 最低 expected co-occurrence
-O_MAX_GRID = [0, 1, 2, 3]        # 最高 observed co-occurrence
-DOC_MIN_GRID = [1, 2, 3, 5]      # 最少 supporting documents
+# Threshold grid (4 × 4 × 4 = 64 combinations)
+E_MIN_GRID = [1, 3, 5, 10]       # minimum expected co-occurrence
+O_MAX_GRID = [0, 1, 2, 3]        # maximum observed co-occurrence
+DOC_MIN_GRID = [1, 2, 3, 5]      # minimum number of supporting documents
 
-# 基线设置（论文里当前的阈值）
+# Baseline settings (the current thresholds used in the paper)
 BASELINE = (3, 2, 3)
 
 
 # ============================================================
-# 辅助函数
+# Helper functions
 # ============================================================
 def normalize_name(s):
     return s.lower().replace(" ", "").replace(",", "").replace("-", "").strip()
@@ -65,20 +66,20 @@ def load_mine_the_gap(tsv_path, name_to_meshid):
 
 
 # ============================================================
-# Step 1–7：复用 extract_concept_level_gaps.py（带缓存）
+# Steps 1-7: Reuse extract_concept_level_gaps.py (with caching)
 # ============================================================
 def build_candidate_pool():
     """
-    复用 extract_concept_level_gaps.py 的 Step 1–7，
-    返回未过滤的全量候选池 gap_doc_support / gap_query_support，
-    以及每个 pair 的 (expected, observed) 统计。
+    Reuses Steps 1-7 of extract_concept_level_gaps.py,
+    returns the unfiltered candidate pool gap_doc_support / gap_query_support,
+    as well as the (expected, observed) statistics for each pair.
     """
     if Path(CACHE_PATH).exists():
         print(f"Loading cached pool from {CACHE_PATH}...")
         with open(CACHE_PATH, "rb") as f:
             return pickle.load(f)
 
-    # ---- Step 1: 加载 corpus ----
+    # ---- Step 1: Load corpus ----
     print("Step 1: Loading corpus...")
     docs = []
     with open(CORPUS_PATH, "r", encoding="utf-8") as f:
@@ -88,7 +89,7 @@ def build_candidate_pool():
     doc_mesh_list = [d["mesh"] for d in docs]
     N = len(docs)
 
-    # ---- Step 2: 构建共现矩阵 ----
+    # ---- Step 2: Build co-occurrence matrix ----
     print("Step 2: Building co-occurrence matrix...")
     mesh_sets = [set(m) for m in doc_mesh_list]
     vocab = sorted({m for s in mesh_sets for m in s})
@@ -103,7 +104,7 @@ def build_candidate_pool():
             for j in idxs:
                 cooc[i, j] += 1
 
-    # ---- Step 3: name→ID 映射 ----
+    # ---- Step 3: name -> ID mapping ----
     print("Step 3: Building name -> ID mapping...")
     builder = HypergraphBuilder(cooccurrence_path=COOC_PATH)
     name_to_meshid = {}
@@ -114,17 +115,17 @@ def build_candidate_pool():
         name_to_meshid[normalize_name(name)] = meshd_id
     print(f"  Built {len(name_to_meshid)} name -> ID entries")
 
-    # ---- Step 4: 加载 Mine the Gap! 25 pairs ----
+    # ---- Step 4: Load the 25 Mine the Gap! pairs ----
     print("Step 4: Loading Mine the Gap! pairs...")
     mine_the_gap_set = load_mine_the_gap(MINE_THE_GAP_PATH, name_to_meshid)
 
-    # ---- Step 5: 构建 BM25 ----
+    # ---- Step 5: Build BM25 ----
     print("Step 5: Building BM25...")
     tokenized = [clean_text(d["title"] + " " + d["abstract"]).lower().split()
                  for d in docs]
     bm25 = BM25Okapi(tokenized)
 
-    # ---- Step 6: cooc_scores 函数 ----
+    # ---- Step 6: cooc_scores function ----
     def cooc_scores(q_mesh):
         q_idx = [mesh_to_idx[m] for m in q_mesh if m in mesh_to_idx]
         if not q_idx:
@@ -138,7 +139,7 @@ def build_candidate_pool():
             scores[k] = overlap / (len(q_idx) + 1e-8)
         return scores
 
-    # ---- Step 7: 收集所有 BM25-only 文档里的 MeSH pair（不过滤！）----
+    # ---- Step 7: Collect MeSH pairs from all BM25-only documents (no filtering!) ----
     print("Step 7: Extracting candidate pairs from BM25-only documents...")
     top_k = 20
     queries = [d for d in docs if len(d["mesh"]) >= 3][:50]
@@ -166,7 +167,7 @@ def build_candidate_pool():
 
     print(f"Collected {len(gap_doc_support)} candidate pairs (before threshold filtering)")
 
-    # ---- 预先计算每个 pair 的 (expected, observed) ----
+    # ---- Precompute (expected, observed) for every pair ----
     print("Precomputing (expected, observed) for all pairs...")
     pair_stats = {}
     for pair in tqdm(gap_doc_support, desc="Precomputing"):
@@ -193,7 +194,7 @@ def build_candidate_pool():
 
 
 # ============================================================
-# Step 8：敏感性分析（64 组阈值）
+# Step 8: Sensitivity analysis (64 threshold combinations)
 # ============================================================
 def run_sensitivity_analysis(cache):
     gap_doc_support = cache["gap_doc_support"]
@@ -206,7 +207,7 @@ def run_sensitivity_analysis(cache):
 
     results = []
     for E_min, O_max, doc_min in itertools.product(E_MIN_GRID, O_MAX_GRID, DOC_MIN_GRID):
-        # 过滤
+        # Filter
         filtered = []
         for pair, docs in gap_doc_support.items():
             if len(pair) != 2:
@@ -229,10 +230,10 @@ def run_sensitivity_analysis(cache):
                 "in_mtg": pair in mine_the_gap_set,
             })
 
-        # 排序（按 expected 降序）
+        # Sort (by expected in descending order)
         filtered.sort(key=lambda x: -x["expected"])
 
-        # AI × GRN 的位置
+        # Rank of AI × GRN
         ai_grn_rank = None
         for rank, item in enumerate(filtered, start=1):
             if item["pair"] == ai_grn_key:
@@ -259,14 +260,14 @@ def run_sensitivity_analysis(cache):
 
 
 # ============================================================
-# Step 9–10：输出与摘要
+# Steps 9-10: Output and summary
 # ============================================================
 def summarize(results):
     df = pd.DataFrame(results)
     df.to_csv(OUTPUT_CSV, index=False)
     print(f"\nFull results saved to {OUTPUT_CSV}")
 
-    # 保存 JSON（只保留 AI × GRN 相关信息 + 基线）
+    # Save JSON (keep only AI × GRN-related information + baseline)
     with open(OUTPUT_JSON, "w", encoding="utf-8") as f:
         json.dump({
             "n_combinations": len(results),
@@ -278,7 +279,7 @@ def summarize(results):
         }, f, indent=2)
     print(f"Summary saved to {OUTPUT_JSON}")
 
-    # 终端打印
+    # Print to terminal
     print("\n" + "=" * 70)
     print("SENSITIVITY ANALYSIS SUMMARY")
     print("=" * 70)
@@ -303,11 +304,11 @@ def summarize(results):
 
 
 # ============================================================
-# 主程序
+# Main program
 # ============================================================
 def main():
     print("=" * 70)
-    print("Building candidate pool (Step 1–7, will be cached)...")
+    print("Building candidate pool (Step 1-7, will be cached)...")
     print("=" * 70)
     cache = build_candidate_pool()
 
