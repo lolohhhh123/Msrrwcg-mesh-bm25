@@ -446,7 +446,7 @@ def main():
     model.to(device)
     model.eval()
     builder = HypergraphBuilder(
-    cooccurrence_path="/home/hong/GNN/mesh_cooccurrence.pkl"  # change to your actual path
+    cooccurrence_path="./mesh_cooccurrence.pkl"  # change to your actual path
     )
     nlp = builder.nlp   # keep the nlp reference to avoid errors elsewhere
 
