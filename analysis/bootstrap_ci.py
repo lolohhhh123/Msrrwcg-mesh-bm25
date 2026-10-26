@@ -1,13 +1,14 @@
 """
 bootstrap_ci.py
-对 analyze_multi_signal_ranking.py 输出的 per-query 统计做 bootstrap 置信区间。
-支持：
-  (1) 单 metric 的 percentile bootstrap CI
-  (2) 两个 metric 的 paired bootstrap（差值 CI）
-输出：
-  - bootstrap_ci.json    (完整数据)
-  - bootstrap_ci.txt     (论文可直接引用的文本)
-  - bootstrap_ci.tex     (LaTeX 表格)
+Computes bootstrap confidence intervals for the per-query statistics
+output by analyze_multi_signal_ranking.py.
+Supports:
+  (1) Percentile bootstrap CI for a single metric
+  (2) Paired bootstrap for two metrics (difference CI)
+Outputs:
+  - bootstrap_ci.json    (full data)
+  - bootstrap_ci.txt     (paper-ready text)
+  - bootstrap_ci.tex     (LaTeX table)
 """
 import json
 import argparse
@@ -16,13 +17,13 @@ from pathlib import Path
 
 
 # ============================================================
-# 核心：bootstrap 函数
+# Core: bootstrap functions
 # ============================================================
 def bootstrap_ci(values, n_bootstrap=10000, ci=95, seed=42):
     """
-    Percentile bootstrap 置信区间。
-    values: 每个 query 的 metric 值（list of float）
-    返回: dict(mean, ci_lower, ci_upper, n_queries, n_bootstrap, ci_level)
+    Percentile bootstrap confidence interval.
+    values: per-query metric values (list of float)
+    Returns: dict(mean, ci_lower, ci_upper, n_queries, n_bootstrap, ci_level)
     """
     values = np.array(values, dtype=float)
     values = values[~np.isnan(values)]
@@ -50,12 +51,13 @@ def bootstrap_ci(values, n_bootstrap=10000, ci=95, seed=42):
 
 def paired_bootstrap_diff(values_a, values_b, n_bootstrap=10000, ci=95, seed=42):
     """
-    Paired bootstrap：两个 per-query metric 的差值（mean_a − mean_b）及其 CI。
-    用于回答"两个 metric 是否显著不同"。
+    Paired bootstrap: the difference between two per-query metrics
+    (mean_a − mean_b) and its CI.
+    Used to answer "are the two metrics significantly different?".
     """
     a = np.array(values_a, dtype=float)
     b = np.array(values_b, dtype=float)
-    assert len(a) == len(b), "paired bootstrap 要求两个 metric 来自同一批 query"
+    assert len(a) == len(b), "paired bootstrap requires both metrics to come from the same set of queries"
     mask = ~(np.isnan(a) | np.isnan(b))
     a, b = a[mask], b[mask]
     n = len(a)
@@ -69,7 +71,7 @@ def paired_bootstrap_diff(values_a, values_b, n_bootstrap=10000, ci=95, seed=42)
     alpha = (100 - ci) / 2
     lower = float(np.percentile(diffs, alpha))
     upper = float(np.percentile(diffs, 100 - alpha))
-    # 双尾 p-value：差值中 <=0 或 >=0 的比例 × 2
+    # Two-sided p-value: proportion of diffs <=0 or >=0, times 2
     p_two_sided = float(2 * min((diffs <= 0).mean(), (diffs >= 0).mean()))
     return {
         "mean_diff": float(np.mean(a) - np.mean(b)),
@@ -82,17 +84,17 @@ def paired_bootstrap_diff(values_a, values_b, n_bootstrap=10000, ci=95, seed=42)
 
 
 # ============================================================
-# 格式化输出
+# Formatting output
 # ============================================================
 def format_paper_string(metric, stats):
-    """输出 'Spearman_BM25_Cooc: 0.0700 (95% CI: [0.0312, 0.1105], n = 50)'。"""
+    """Produces 'Spearman_BM25_Cooc: 0.0700 (95% CI: [0.0312, 0.1105], n = 50)'."""
     return (f"{metric}: {stats['mean']:.4f} "
             f"(95% CI: [{stats['ci_lower']:.4f}, {stats['ci_upper']:.4f}], "
             f"n = {stats['n_queries']} queries)")
 
 
 def format_latex_table(single_results, paired_results, metrics_to_report):
-    """生成可直接粘进论文的 LaTeX 表格。"""
+    """Generates a LaTeX table that can be pasted directly into a paper."""
     lines = [
         r"\begin{table}[h]",
         r"\centering",
@@ -115,7 +117,7 @@ def format_latex_table(single_results, paired_results, metrics_to_report):
 
 
 # ============================================================
-# 主流程
+# Main flow
 # ============================================================
 def main():
     parser = argparse.ArgumentParser()
@@ -127,20 +129,20 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    # 1. 读取 per-query 数据
+    # 1. Load per-query data
     with open(args.per_query_stats, "r") as f:
         per_query = json.load(f)
     print(f"Loaded {len(per_query)} metrics from {args.per_query_stats}")
     print(f"Each metric has {len(next(iter(per_query.values())))} per-query values\n")
 
-    # 2. 单 metric bootstrap
+    # 2. Single-metric bootstrap
     single_results = {}
     for metric, values in per_query.items():
         stats = bootstrap_ci(values, n_bootstrap=args.n_bootstrap, seed=args.seed)
         if stats is not None:
             single_results[metric] = stats
 
-    # 3. Paired bootstrap（同一批 query 上两个 metric 的差值）
+    # 3. Paired bootstrap (difference between two metrics on the same set of queries)
     paired_results = {}
     pairs_to_test = [
         ("Spearman_BM25_Cooc", "Spearman_BM25_GNN"),
@@ -155,7 +157,7 @@ def main():
             if diff is not None:
                 paired_results[f"{a}_vs_{b}"] = diff
 
-    # 4. 保存 JSON
+    # 4. Save JSON
     out_dir = Path(args.output_json).parent
     out_dir.mkdir(parents=True, exist_ok=True)
     with open(args.output_json, "w") as f:
@@ -164,7 +166,7 @@ def main():
             "paired_differences": paired_results,
         }, f, indent=2)
 
-    # 5. 人读文本
+    # 5. Human-readable text
     metrics_to_report = [
         "Spearman_BM25_Cooc",
         "Spearman_BM25_GNN",
@@ -184,7 +186,7 @@ def main():
             print(line)
             txt_lines.append(line)
 
-    # 6. Paired 差值也打印
+    # 6. Also print paired differences
     print("\n=== Paired bootstrap differences ===")
     for k, v in paired_results.items():
         line = (f"{k}: Δ = {v['mean_diff']:.4f} "
@@ -201,7 +203,7 @@ def main():
     with open(args.output_latex, "w") as f:
         f.write(latex)
 
-    # 8. 关键结论
+    # 8. Key findings
     print("\n" + "=" * 70)
     print("KEY FINDINGS")
     print("=" * 70)
