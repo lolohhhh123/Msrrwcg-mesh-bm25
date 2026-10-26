@@ -1,6 +1,6 @@
 """
 evaluate_full_corpus.py
-全量文档检索评估（无负采样）+ 极致加速
+Full-corpus document retrieval evaluation (no negative sampling) + extreme acceleration
 """
 
 import torch
@@ -30,38 +30,38 @@ from evaluate_baselines import clean_text
 
 nltk.download('punkt', quiet=True)
 
-# ==================== BM25 全量评估（快速版） ====================
+# ==================== BM25 full evaluation (fast version) ====================
 def evaluate_bm25_full(dataset, num_queries=30):
-    """BM25全量检索（一次性计算所有文档分数）"""
-    print("构建BM25索引...")
+    """BM25 full retrieval (compute all document scores at once)"""
+    print("Building BM25 index...")
     pmids = list(dataset.pmid_to_doc.keys())
     doc_texts = [clean_text(dataset.pmid_to_doc[pid]['full_readable']) for pid in pmids]
     tokenized_docs = [word_tokenize(doc.lower()) for doc in doc_texts]
     bm25 = BM25Okapi(tokenized_docs)
     
-    # 构建查询
+    # Build queries
     query_pmids = pmids[:num_queries]
     query_texts = [dataset.pmid_to_doc[pid]['title_readable'] for pid in query_pmids]
     
-    # 批量查询BM25
-    print(f"对 {len(query_pmids)} 个查询进行BM25检索...")
+    # Batch query BM25
+    print(f"Running BM25 retrieval for {len(query_pmids)} queries...")
     all_scores = []
-    for q_text in tqdm(query_texts, desc="BM25查询"):
+    for q_text in tqdm(query_texts, desc="BM25 queries"):
         q_tokens = word_tokenize(clean_text(q_text).lower())
         scores = bm25.get_scores(q_tokens)
         all_scores.append(scores)
     
     all_scores = np.array(all_scores)  # [num_queries, total_docs]
     
-    # 构建ground truth
+    # Build ground truth
     ground_truth = build_ground_truth(dataset, query_pmids)
     
     return all_scores, ground_truth, query_pmids
 
 
-# ==================== GNN 全量评估（GPU加速版） ====================
+# ==================== GNN full evaluation (GPU-accelerated version) ====================
 class DocumentFeatureDataset(Dataset):
-    """预加载所有文档特征到内存"""
+    """Preload all document features into memory"""
     def __init__(self, doc_features, pmids):
         self.pmids = pmids
         self.doc_features = doc_features
@@ -75,8 +75,8 @@ class DocumentFeatureDataset(Dataset):
         return Data(x=feat['node_features'], edge_index=feat['edge_index'])
 
 def evaluate_gnn_full(model_path, dataset, builder, device, num_queries=30, batch_size=512, num_classes=1):
-    """GNN全量检索（GPU批量推理）"""
-    print("加载GNN模型...")
+    """GNN full retrieval (GPU batch inference)"""
+    print("Loading GNN model...")
     model = HypergraphGNNScorer(node_feat_dim=200, hidden_dim=128, num_classes=num_classes)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
@@ -86,34 +86,34 @@ def evaluate_gnn_full(model_path, dataset, builder, device, num_queries=30, batc
     pmids = list(dataset.pmid_to_doc.keys())
     query_pmids = pmids[:num_queries]
     
-    # 预加载所有文档特征到内存（已在builder中缓存）
+    # Preload all document features into memory (already cached in builder)
     doc_features = builder.doc_features if hasattr(builder, 'doc_features') else {}
     if not doc_features:
-        # 如果builder没有doc_features，从缓存加载
+        # If builder has no doc_features, load from cache
         with open("./hypergraph_cache/doc_features.pkl", "rb") as f:
             doc_features = pickle.load(f)
     
-    # 创建DataLoader批量加载文档
+    # Create DataLoader to batch-load documents
     doc_dataset = DocumentFeatureDataset(doc_features, pmids)
     doc_loader = DataLoader(doc_dataset, batch_size=batch_size, shuffle=False, 
                            num_workers=24, pin_memory=True, collate_fn=Batch.from_data_list)
     
-    # 预计算所有文档嵌入
-    print(f"预计算 {len(pmids)} 篇文档的嵌入...")
+    # Precompute embeddings for all documents
+    print(f"Precomputing embeddings for {len(pmids)} documents...")
     all_doc_embs = []
     with torch.no_grad():
-        for batch in tqdm(doc_loader, desc="编码文档"):
+        for batch in tqdm(doc_loader, desc="Encoding documents"):
             batch = batch.to(device)
             doc_emb = model.get_document_embedding(batch.x, batch.edge_index, batch=batch.batch)
             all_doc_embs.append(doc_emb.cpu())
     all_doc_embs = torch.cat(all_doc_embs, dim=0)  # [total_docs, hidden_dim]
     ground_truth = build_ground_truth(dataset, query_pmids)
-    # 对每个查询评分
-    print(f"对 {len(query_pmids)} 个查询进行GNN检索...")
+    # Score each query
+    print(f"Running GNN retrieval for {len(query_pmids)} queries...")
     all_scores = []
     get_query_emb = get_query_embedding_func(nlp, model)
     
-    for idx, q_pmid in enumerate(tqdm(query_pmids, desc="GNN查询")):
+    for idx, q_pmid in enumerate(tqdm(query_pmids, desc="GNN queries")):
         doc_info = dataset.pmid_to_doc[q_pmid]
         q_text = ' '.join(builder.extract_mesh_ids(doc_info['title_readable'] + ' ' + doc_info['abstract_readable']))
         q_emb = get_query_emb(q_text).to(device)
@@ -124,15 +124,15 @@ def evaluate_gnn_full(model_path, dataset, builder, device, num_queries=30, batc
             print(f"q_emb sample (first 5): {q_emb[0, :5].detach().cpu().numpy()}")
             print(f"doc_embs sample (first 5): {all_doc_embs[0, :5].detach().cpu().numpy()}")
             print(f"scores sample (first 5): {scores[:5]}")
-            # 调试：检查相关文档的排名
+            # Debug: check the ranking of relevant documents
         truth = ground_truth[q_pmid]
         rel_indices = np.where(truth >= 1)[0]
         if len(rel_indices) > 0:
-            # 获取这些文档的分数
+            # Get the scores of these documents
             rel_scores = scores[rel_indices]
-            # 获取所有文档分数的排序
+            # Get the ranking of all document scores
             sorted_indices = np.argsort(scores)[::-1]
-            # 对每个相关文档，找到其排名
+            # For each relevant document, find its rank
             for idx in rel_indices:
                 rank = np.where(sorted_indices == idx)[0][0] + 1
                 print(f"Query {q_pmid}: relevant doc {idx} rank {rank}, score {scores[idx]}")
@@ -143,10 +143,10 @@ def evaluate_gnn_full(model_path, dataset, builder, device, num_queries=30, batc
     return all_scores, ground_truth, query_pmids
 
 
-# ==================== Ordinal 模型全量评估 ====================
+# ==================== Ordinal model full evaluation ====================
 def evaluate_ordinal_full(model_path, dataset, builder, device, num_queries=30, batch_size=512):
-    """Ordinal模型全量检索（取类别2概率）"""
-    print("加载Ordinal模型...")
+    """Ordinal model full retrieval (take class-2 probability)"""
+    print("Loading Ordinal model...")
     model = HypergraphGNNScorer(node_feat_dim=200, hidden_dim=128, num_classes=3)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.to(device)
@@ -156,38 +156,38 @@ def evaluate_ordinal_full(model_path, dataset, builder, device, num_queries=30, 
     pmids = list(dataset.pmid_to_doc.keys())
     query_pmids = pmids[:num_queries]
     
-    # 加载文档特征
+    # Load document features
     with open("./hypergraph_cache/doc_features.pkl", "rb") as f:
         doc_features = pickle.load(f)
     
-    # 预计算所有文档的嵌入和logits
-    print(f"预计算 {len(pmids)} 篇文档的Ordinal logits...")
+    # Precompute embeddings and logits for all documents
+    print(f"Precomputing Ordinal logits for {len(pmids)} documents...")
     all_logits = []
     
     doc_dataset = DocumentFeatureDataset(doc_features, pmids)
     doc_loader = DataLoader(doc_dataset, batch_size=batch_size, shuffle=False,
                            num_workers=24, pin_memory=True, collate_fn=Batch.from_data_list)
     
-    # 由于Ordinal需要查询嵌入，我们先对所有文档计算doc_emb，然后用查询拼接
-    # 更好的方式：预计算doc_emb，查询时批量计算
+    # Since Ordinal needs query embeddings, we first compute doc_emb for all documents, then concatenate with the query
+    # A better approach: precompute doc_emb and batch-compute at query time
     all_doc_embs = []
     with torch.no_grad():
-        for batch in tqdm(doc_loader, desc="编码文档"):
+        for batch in tqdm(doc_loader, desc="Encoding documents"):
             batch = batch.to(device)
             doc_emb = model.get_document_embedding(batch.x, batch.edge_index, batch=batch.batch)
             all_doc_embs.append(doc_emb.cpu())
     all_doc_embs = torch.cat(all_doc_embs, dim=0)  # [total_docs, hidden_dim]
     
-    # 对每个查询评分（取类别2概率）
+    # Score each query (take class-2 probability)
     get_query_emb = get_query_embedding_func(nlp, model)
     all_scores = []
     
-    for q_pmid in tqdm(query_pmids, desc="Ordinal查询"):
+    for q_pmid in tqdm(query_pmids, desc="Ordinal queries"):
         q_text = ' '.join(builder.extract_mesh_ids(dataset.pmid_to_doc[q_pmid]['title_readable']))
         q_emb = get_query_emb(q_text).to(device)
         q_emb = model.query_proj(q_emb)  # [1, hidden_dim]
         
-        # 批量计算logits
+        # Batch-compute logits
         q_expanded = q_emb.repeat(all_doc_embs.size(0), 1)  # [total_docs, hidden_dim]
         combined = torch.cat([q_expanded, all_doc_embs.to(device)], dim=-1)  # [total_docs, 2*hidden_dim]
         logits = model.score_mlp(combined)  # [total_docs, 3]
@@ -200,9 +200,9 @@ def evaluate_ordinal_full(model_path, dataset, builder, device, num_queries=30, 
     return all_scores, ground_truth, query_pmids
 
 
-# ==================== 辅助函数 ====================
+# ==================== Helper functions ====================
 def build_ground_truth(dataset, query_pmids):
-    """构建每个查询的真实相关性向量（全量文档）"""
+    """Build the true relevance vector for each query (full corpus)"""
     pmids = list(dataset.pmid_to_doc.keys())
     pmid_to_idx = {pid: i for i, pid in enumerate(pmids)}
     total_docs = len(pmids)
@@ -231,25 +231,25 @@ def get_query_embedding_func(nlp, model):
             emb = torch.tensor(np.mean(vecs, axis=0), dtype=torch.float32)
         else:
             emb = torch.zeros(200, dtype=torch.float32)
-        return emb.unsqueeze(0)  # 确保形状为 [1, 200]
+        return emb.unsqueeze(0)  # Ensure the shape is [1, 200]
     return func
 
 
 def compute_metrics(all_scores, ground_truth, query_pmids, k=10):
-    """计算MRR、nDCG@k、Precision@k、Recall@k"""
+    """Compute MRR, nDCG@k, Precision@k, Recall@k"""
     metrics_list = []
     for i, q_pmid in enumerate(query_pmids):
         scores = all_scores[i]
         truth = ground_truth[q_pmid]
-        # 排除自身（查询文档本身）
-        # 但全量评估中，我们保留自身，因为真实场景不会排除
-        # 但这里我们排除自身以避免偏差
-        # 需要知道查询文档的索引
-        # 简化：不排除，因为查询文档在训练集中可能不存在于测试对中
-        # 但我们可以在计算指标时忽略自身
-        # 这里暂时不排除，保持简单
+        # Exclude itself (the query document itself)
+        # But in full evaluation, we keep itself because the real scenario would not exclude it
+        # But here we exclude itself to avoid bias
+        # Need to know the index of the query document
+        # Simplification: do not exclude, because the query document in the training set may not exist in the test pairs
+        # But we can ignore itself when computing metrics
+        # For now, do not exclude; keep it simple
         
-        # 计算指标
+        # Compute metrics
         true = np.array(truth)
         pred = np.array(scores)
         
@@ -296,13 +296,13 @@ def compute_metrics(all_scores, ground_truth, query_pmids, k=10):
     return avg_metrics
 
 
-# ==================== 主程序 ====================
+# ==================== Main program ====================
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--npy_path", default="./train_annotated.npy")
     parser.add_argument("--relevance_path", default="./relevance_matrix.tsv")
     parser.add_argument("--mesh_xml", default="./desc2026.xml")
-    parser.add_argument("--model_dir", default="./model", help="模型目录")
+    parser.add_argument("--model_dir", default="./model", help="model directory")
     parser.add_argument("--num_queries", type=int, default=30)
     parser.add_argument("--k", type=int, default=10)
     parser.add_argument("--batch_size", type=int, default=512)
@@ -310,11 +310,11 @@ def main():
     args = parser.parse_args()
     
     print("=" * 80)
-    print("全量文档检索评估（无负采样）")
+    print("Full-corpus document retrieval evaluation (no negative sampling)")
     print("=" * 80)
     
-    # 加载数据集
-    print("加载数据集...")
+    # Load dataset
+    print("Loading dataset...")
     dataset = RELISHDataset(
         npy_path=args.npy_path,
         relevance_path=args.relevance_path,
@@ -322,39 +322,39 @@ def main():
         split='test',
         normalize_labels=False
     )
-    print(f"文档总数: {len(dataset.pmid_to_doc)}")
-    print(f"相关性对: {len(dataset.pairs)}")
-    # 加载数据集后
+    print(f"Total documents: {len(dataset.pmid_to_doc)}")
+    print(f"Relevance pairs: {len(dataset.pairs)}")
+    # After loading the dataset
     pmids = list(dataset.pmid_to_doc.keys())
 
-    # 构建前500个查询的ground truth
-    print("构建ground truth并筛选有效查询...")
+    # Build ground truth for the first 500 queries
+    print("Building ground truth and filtering valid queries...")
     all_gt = build_ground_truth(dataset, pmids[:500])
     valid_query_pmids = []
     for q in pmids[:500]:
         if np.sum(all_gt[q] >= 1) > 0:
             valid_query_pmids.append(q)
-    print(f"有效查询数: {len(valid_query_pmids)}")
+    print(f"Number of valid queries: {len(valid_query_pmids)}")
 
     if len(valid_query_pmids) == 0:
-        print("错误：测试集中没有有效查询，请使用 split='train' 或检查数据。")
+        print("Error: no valid queries in the test set; please use split='train' or check the data.")
         return
 
     query_pmids = valid_query_pmids[:args.num_queries]
 
-    # 1. BM25全量评估
+    # 1. BM25 full evaluation
     print("\n" + "=" * 40)
-    print("BM25 全量评估")
+    print("BM25 full evaluation")
     print("=" * 40)
     bm25_scores, bm25_gt, query_pmids = evaluate_bm25_full(dataset, args.num_queries)
     bm25_metrics = compute_metrics(bm25_scores, bm25_gt, query_pmids, args.k)
-    print(f"BM25 结果:")
+    print(f"BM25 results:")
     for k, v in bm25_metrics.items():
         print(f"  {k}: {v:.4f}")
     
-    # 2. Triplet模型
+    # 2. Triplet model
     print("\n" + "=" * 40)
-    print("Triplet 模型全量评估")
+    print("Triplet model full evaluation")
     print("=" * 40)
     builder = HypergraphBuilder()
     triplet_path = Path(args.model_dir) / "full_Triplet_model.pth"
@@ -363,15 +363,15 @@ def main():
             str(triplet_path), dataset, builder, args.device, args.num_queries, args.batch_size, num_classes=1
         )
         triplet_metrics = compute_metrics(triplet_scores, bm25_gt, query_pmids, args.k)
-        print(f"Triplet 结果:")
+        print(f"Triplet results:")
         for k, v in triplet_metrics.items():
             print(f"  {k}: {v:.4f}")
     else:
-        print("Triplet模型未找到，跳过")
+        print("Triplet model not found; skipping")
     
-    # 3. ListNet模型
+    # 3. ListNet model
     print("\n" + "=" * 40)
-    print("ListNet 模型全量评估")
+    print("ListNet model full evaluation")
     print("=" * 40)
     listnet_path = Path(args.model_dir) / "full_ListNet_model.pth"
     if listnet_path.exists():
@@ -379,15 +379,15 @@ def main():
             str(listnet_path), dataset, builder, args.device, args.num_queries, args.batch_size
         )
         listnet_metrics = compute_metrics(listnet_scores, bm25_gt, query_pmids, args.k)
-        print(f"ListNet 结果:")
+        print(f"ListNet results:")
         for k, v in listnet_metrics.items():
             print(f"  {k}: {v:.4f}")
     else:
-        print("ListNet模型未找到，跳过")
+        print("ListNet model not found; skipping")
     
-    # 4. Ordinal模型
+    # 4. Ordinal model
     print("\n" + "=" * 40)
-    print("Ordinal 模型全量评估")
+    print("Ordinal model full evaluation")
     print("=" * 40)
     ordinal_path = Path(args.model_dir) / "full_Ordinal_model.pth"
     if ordinal_path.exists():
@@ -395,15 +395,15 @@ def main():
             str(ordinal_path), dataset, builder, args.device, args.num_queries, args.batch_size
         )
         ordinal_metrics = compute_metrics(ordinal_scores, bm25_gt, query_pmids, args.k)
-        print(f"Ordinal 结果:")
+        print(f"Ordinal results:")
         for k, v in ordinal_metrics.items():
             print(f"  {k}: {v:.4f}")
     else:
-        print("Ordinal模型未找到，跳过")
+        print("Ordinal model not found; skipping")
     
-    # 汇总对比
+    # Summary comparison
     print("\n" + "=" * 80)
-    print("全量文档检索结果汇总 (k=10, 30个查询)")
+    print("Full-corpus document retrieval results summary (k=10, 30 queries)")
     print("=" * 80)
     print(f"{'Model':<15} {'MRR':<10} {'nDCG@10':<10} {'P@10':<10} {'R@10':<10}")
     print("-" * 60)
