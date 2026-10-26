@@ -6,7 +6,7 @@ from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
 from pathlib import Path
 from mesh_translator import MeshTranslator
-from tqdm import tqdm   # 用于显示进度条
+from tqdm import tqdm   # for displaying a progress bar
 
 class RELISHDataset(Dataset):
     def __init__(self, 
@@ -20,30 +20,30 @@ class RELISHDataset(Dataset):
                  normalize_labels: bool = False):
         """
         Args:
-            npy_path: .npy文件路径（例如 train_annotated.npy）
-            relevance_path: relevance_matrix.tsv 路径
-            mesh_xml_path: MeSH XML 文件路径（用于构建翻译器）
+            npy_path: path to the .npy file (e.g. train_annotated.npy)
+            relevance_path: path to relevance_matrix.tsv
+            mesh_xml_path: path to the MeSH XML file (used to build the translator)
             split: 'train', 'val', 'test'
-            test_size, val_size, random_state: 用于划分数据集
-            normalize_labels: 是否将标签归一化到 [0,1]
+            test_size, val_size, random_state: used to split the dataset
+            normalize_labels: whether to normalize labels to [0,1]
         """
-        # 初始化 MeSH 翻译器
+        # Initialize the MeSH translator
         self.translator = MeshTranslator(mesh_xml_path)
 
-        # 1. 加载文档token数据
+        # 1. Load document token data
         data = np.load(npy_path, allow_pickle=True)
         self.pmid_to_doc = {}
-        print("正在加载并翻译文档...")
-        for row in tqdm(data, desc="处理文档"):
+        print("Loading and translating documents...")
+        for row in tqdm(data, desc="Processing documents"):
             pmid = int(row[0])
             title_tokens = row[1]
             abstract_tokens = row[2]
-            # 原始文本（含 MeSH ID）
+            # Raw text (including MeSH IDs)
             title_raw = ' '.join(title_tokens)
             abstract_raw = ' '.join(abstract_tokens)
             full_raw = f"{title_raw}. {abstract_raw}"
 
-            # 一次性翻译成可读文本（仅一次，避免后续重复）
+            # Translate to readable text once (to avoid repeated work later)
             title_readable = self.translator.replace_mesh_ids_in_text(title_raw)
             abstract_readable = self.translator.replace_mesh_ids_in_text(abstract_raw)
             full_readable = f"{title_readable}. {abstract_readable}"
@@ -57,13 +57,13 @@ class RELISHDataset(Dataset):
                 'full_readable': full_readable
             }
 
-        # 2. 加载relevance矩阵
+        # 2. Load relevance matrix
         rel_df = pd.read_csv(relevance_path, sep='\t')
         valid_mask = rel_df['PMID1'].isin(self.pmid_to_doc.keys()) & \
                      rel_df['PMID2'].isin(self.pmid_to_doc.keys())
         rel_df = rel_df[valid_mask].reset_index(drop=True)
 
-        # 3. 划分数据集（按PMID划分，确保文档对不跨集）
+        # 3. Split dataset (by PMID, ensuring document pairs do not cross splits)
         pmids_unique = list(set(rel_df['PMID1']).union(set(rel_df['PMID2'])))
         train_pmids, temp_pmids = train_test_split(pmids_unique, test_size=test_size+val_size, random_state=random_state)
         val_pmids, test_pmids = train_test_split(temp_pmids, test_size=test_size/(test_size+val_size), random_state=random_state)
@@ -80,7 +80,7 @@ class RELISHDataset(Dataset):
         mask = rel_df['PMID1'].isin(keep_pmids) & rel_df['PMID2'].isin(keep_pmids)
         self.pairs = rel_df[mask].reset_index(drop=True)
 
-        # 4. 标签处理
+        # 4. Label processing
         raw_labels = self.pairs['Relevance'].values.astype(float)
         if normalize_labels:
             self.labels = raw_labels / 2.0
@@ -98,7 +98,7 @@ class RELISHDataset(Dataset):
         pmid2 = row['PMID2']
         label = self.labels[idx]
 
-        # 直接使用预处理好的可读文本
+        # Directly use preprocessed readable text
         doc1 = self.pmid_to_doc[pmid1]
         doc2 = self.pmid_to_doc[pmid2]
 
