@@ -446,9 +446,9 @@ def main():
     model.to(device)
     model.eval()
     builder = HypergraphBuilder(
-    cooccurrence_path="/home/hong/GNN/mesh_cooccurrence.pkl"  # 改成你的实际路径
+    cooccurrence_path="/home/hong/GNN/mesh_cooccurrence.pkl"  # change to your actual path
     )
-    nlp = builder.nlp   # 保留 nlp 引用，避免其他地方引用报错
+    nlp = builder.nlp   # keep the nlp reference to avoid errors elsewhere
 
     print("Precomputing GNN document embeddings...")
     doc_embs = precompute_doc_embeddings(
