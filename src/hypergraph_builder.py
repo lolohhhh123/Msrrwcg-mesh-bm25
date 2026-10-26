@@ -13,21 +13,21 @@ import time
 import os, sys
 class HypergraphBuilder:
     def __init__(self, cooccurrence_path="/home/hong/GNN/mesh_cooccurrence.pkl"):
-        print(f"[{time.strftime('%H:%M:%S')}] 开始初始化 HypergraphBuilder (PID={os.getpid()})", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}] Initializing HypergraphBuilder (PID={os.getpid()})", flush=True)
     
-        # 加载 scispacy 模型
-        print(f"[{time.strftime('%H:%M:%S')}] 正在加载 scispacy 模型...", flush=True)
+        # Load the scispacy model
+        print(f"[{time.strftime('%H:%M:%S')}] Loading scispacy model...", flush=True)
         self.nlp = spacy.load("en_core_sci_scibert")
-        print(f"[{time.strftime('%H:%M:%S')}] scispacy 模型加载完成", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}] scispacy model loaded", flush=True)
     
-        print(f"[{time.strftime('%H:%M:%S')}] 正在添加 scispacy_linker...", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}] Adding scispacy_linker...", flush=True)
         if not self.nlp.has_pipe("scispacy_linker"):
             self.nlp.add_pipe("scispacy_linker", config={"linker_name": "mesh"})
         self.linker = self.nlp.get_pipe("scispacy_linker")
-        print(f"[{time.strftime('%H:%M:%S')}] scispacy_linker 添加完成", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}] scispacy_linker added", flush=True)
     
-        # 其他初始化...
-        print(f"[{time.strftime('%H:%M:%S')}] 正在加载共现矩阵...", flush=True)
+        # Other initialization...
+        print(f"[{time.strftime('%H:%M:%S')}] Loading co-occurrence matrix...", flush=True)
         self.cooccurrence_path = cooccurrence_path
         self.cooccurrence = None
         self.mesh_to_idx = {}
@@ -38,11 +38,11 @@ class HypergraphBuilder:
                     data = pickle.load(f)
                     self.cooccurrence = data['cooccurrence']
                     self.mesh_to_idx = data['mesh_to_idx']
-                print(f"[{time.strftime('%H:%M:%S')}] 加载共现矩阵，词汇表大小: {self.cooccurrence.shape[0]}", flush=True)
+                print(f"[{time.strftime('%H:%M:%S')}] Loaded co-occurrence matrix, vocabulary size: {self.cooccurrence.shape[0]}", flush=True)
             except FileNotFoundError:
-                print(f"警告: 未找到共现矩阵文件 {cooccurrence_path}，将使用默认零向量", flush=True)
+                print(f"Warning: co-occurrence matrix file {cooccurrence_path} not found; using default zero vectors", flush=True)
         else:
-            print("未提供共现矩阵路径，MeSH节点将使用零向量", flush=True)
+            print("No co-occurrence matrix path provided; MeSH nodes will use zero vectors", flush=True)
 
         if self.cooccurrence is not None:
             svd_cache_path = "/home/hong/GNN/mesh_svd_cache.pkl"
@@ -60,21 +60,21 @@ class HypergraphBuilder:
                 print(f"  explained variance: {svd.explained_variance_ratio_.sum():.3f}")
         else:
             self.mesh_embeddings = None
-        self.tfidf = TfidfVectorizer(max_features=50, stop_words=None)  # 停用词已在 noun_chunks 中过滤
+        self.tfidf = TfidfVectorizer(max_features=50, stop_words=None)  # stop words already filtered in noun_chunks
         self.mesh_translator = MeshTranslator(Path("./desc2026.xml"))
         self.mesh_pattern = re.compile(r'(meshd\d+)', re.IGNORECASE)
         
-        # 缓存：键为文本的 SHA1 哈希值，值为提取到的 MeSH ID 列表
+        # Cache: key is the SHA1 hash of the text, value is the list of extracted MeSH IDs
         self.mesh_cache = {}
         self.cache_threshold = 0.5
 
     def extract_keywords(self, text, n=10):
-        """从自由文本中提取关键词（仅用于非缓存模式）"""
+        """Extract keywords from free text (used only in non-cached mode)."""
         doc = self.nlp(text)
         noun_chunks = [chunk.text.lower() for chunk in doc.noun_chunks]
         if not noun_chunks:
             return []
-        # 过滤纯停用词（可选）
+        # Filter pure stop words (optional)
         # from sklearn.feature_extraction.text import ENGLISH_STOP_WORDS
         # filtered = [chunk for chunk in noun_chunks if chunk not in ENGLISH_STOP_WORDS]
         # if not filtered: return []
@@ -85,7 +85,7 @@ class HypergraphBuilder:
         return [feature_names[i] for i in top_indices if scores[i] > 0]
 
     def extract_mesh_ids(self, text):
-        """从自由文本中提取 MeSH ID（优先 scispacy，并缓存结果）"""
+        """Extract MeSH IDs from free text (prefer scispacy, with caching)."""
         if not text:
             return []
         existing = re.findall(r'(meshd\d+)', text, re.IGNORECASE)
@@ -118,42 +118,42 @@ class HypergraphBuilder:
 
     def build_hypergraph(self, document_text, query_text, include_mesh=True, doc_cache=None):
         """
-        构建超图，支持传入预计算的文档缓存（doc_cache）。
-        如果 doc_cache 为 None，则实时解析 document_text。
-        doc_cache 应包含：
-            'mesh_ids': list of str (如 ['meshd000544', ...])
-            'keywords': list of str (普通关键词)
-            'sent_texts': list of str (每个句子的文本)
-            'sent_vectors': list of numpy arrays (每个句子的向量)
+        Build a hypergraph, supporting a precomputed document cache (doc_cache).
+        If doc_cache is None, document_text is parsed in real time.
+        doc_cache should contain:
+            'mesh_ids': list of str (e.g. ['meshd000544', ...])
+            'keywords': list of str (regular keywords)
+            'sent_texts': list of str (text of each sentence)
+            'sent_vectors': list of numpy arrays (vector of each sentence)
         """
-        # ---------- 解析查询（必须实时，因为查询很短） ----------
-        # 查询的关键词和 MeSH 仍然需要提取，因为每个查询不同
+        # ---------- Parse query (must be real-time, since queries are short) ----------
+        # Query keywords and MeSH still need to be extracted because each query differs
         query_keywords = self.extract_keywords(query_text, n=10) if query_text else []
         query_mesh_ids = self.extract_mesh_ids(query_text) if include_mesh else []
 
-        # ---------- 文档部分 ----------
+        # ---------- Document part ----------
         if doc_cache is not None:
-            # 使用缓存数据
+            # Use cached data
             doc_keywords = doc_cache.get('keywords', [])
             doc_mesh_ids = doc_cache.get('mesh_ids', [])
             sentences = doc_cache.get('sent_texts', [])
             sent_vectors = doc_cache.get('sent_vectors', [])
         else:
-            # 实时解析文档
+            # Parse document in real time
             doc = self.nlp(document_text)
             sentences = [sent.text for sent in doc.sents]
             sent_vectors = [sent.vector for sent in doc.sents]
             doc_keywords = self.extract_keywords(document_text, n=20)
             doc_mesh_ids = self.extract_mesh_ids(document_text) if include_mesh else []
 
-        # ---------- 构建超图 ----------
+        # ---------- Build hypergraph ----------
         all_nodes = list(set(doc_keywords + query_mesh_ids + doc_mesh_ids))
         if not all_nodes:
             all_nodes = ["[EMPTY]"]
 
         node_to_idx = {node: i for i, node in enumerate(all_nodes)}
 
-        # 构建超边：每个句子连接包含的节点
+        # Build hyperedges: each sentence connects the nodes it contains
         hyperedges = []
         hyperedge_features = []
         for sent_idx, sent_text in enumerate(sentences):
@@ -166,29 +166,27 @@ class HypergraphBuilder:
                     connected_nodes.append(node_to_idx[node])
             if connected_nodes:
                 hyperedges.append(connected_nodes)
-                # 使用缓存的向量（如果存在），否则用零向量（但缓存模式下应有）
+                # Use the cached vector if available, otherwise use a zero vector
+                # (though in cache mode it should exist)
                 if doc_cache is not None and sent_idx < len(sent_vectors):
                     hyperedge_features.append(sent_vectors[sent_idx])
                 else:
-                    # 实时模式下，我们可能没有预存向量，但我们可以通过 nlp 获取，但为了速度，我们保留原有逻辑
-                    # 但在实时模式下，doc 对象还存在，可以获取，但这里为了统一，我们使用零向量
-                    # 但为了不损失性能，我们仍然尝试获取
-                    hyperedge_features.append(np.zeros(200))  # 占位，后续可改进
+                    hyperedge_features.append(np.zeros(200))  # placeholder, can be improved later
 
         if not hyperedges:
             hyperedges.append(list(range(len(all_nodes))))
             hyperedge_features.append(np.zeros(200))
 
-        # 关联矩阵 H
+        # Incidence matrix H
         H = torch.zeros((len(all_nodes), len(hyperedges)))
         for j, edge in enumerate(hyperedges):
             for node_idx in edge:
                 H[node_idx, j] = 1
 
-        # 节点特征
+        # Node features
         node_features = self._get_node_features(all_nodes, include_mesh)
 
-        # 边索引
+        # Edge index
         edge_index = []
         for i, edge in enumerate(hyperedges):
             for node in edge:
@@ -206,7 +204,7 @@ class HypergraphBuilder:
         }
 
     def _get_node_features(self, nodes, include_mesh):
-        """用 SVD embedding（MeSH）或 hash 向量（关键词）生成节点特征"""
+        """Generate node features using SVD embeddings (MeSH) or hash vectors (keywords)."""
         features = []
         for node in nodes:
             if node.startswith('meshd') and include_mesh:
@@ -221,7 +219,7 @@ class HypergraphBuilder:
         return torch.tensor(np.array(features), dtype=torch.float)
 
     def _hash_text_to_vector(self, text, dim=200):
-        """字符 n-gram 哈希，确定性生成向量"""
+        """Character n-gram hashing, deterministically generates a vector."""
         import hashlib
         vec = np.zeros(dim, dtype=np.float32)
         text = text.lower()
@@ -239,7 +237,8 @@ class HypergraphBuilder:
 
     def precompute_doc_cache(self, document_text):
         """
-        为给定的文档文本生成缓存字典，供 build_hypergraph 使用。
+        Generate a cache dictionary for the given document text,
+        for use by build_hypergraph.
         """
         max_tokens = 450
         tokens = list(self.nlp.tokenizer(document_text))
