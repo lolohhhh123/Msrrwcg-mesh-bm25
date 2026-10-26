@@ -1,7 +1,8 @@
 """
-evaluate_keyword_retrieval.py
-专门用于评估关键词-文档检索性能。
-从RELISH数据中构造查询（使用标题或摘要），并评估各模型的排序能力。
+evaluate_baselines.py
+Dedicated to evaluating keyword-document retrieval performance.
+Constructs queries from RELISH data (using title or abstract),
+and evaluates the ranking ability of each model.
 """
 
 import torch
@@ -26,7 +27,7 @@ from gn_scorer_paralle import HypergraphGNNScorer
 nltk.download('punkt', quiet=True)
 random.seed(42)
 
-# ==================== 文本清洗 ====================
+# ==================== Text cleaning ====================
 def clean_text(text):
     if not isinstance(text, str):
         return ""
@@ -34,14 +35,14 @@ def clean_text(text):
     text = re.sub(r'\s+', ' ', text).strip()
     return text
 
-# ==================== 评估函数 ====================
+# ==================== Evaluation functions ====================
 def evaluate_ranking(true_relevance, pred_scores, k=10, query_idx=0):
-    if query_idx < 5:  # 只打印前5个查询
+    if query_idx < 5:  # only print the first 5 queries
         print(f"Query {query_idx}: total candidates={len(true_relevance)}, "
               f"positive count={np.sum(np.array(true_relevance)>=1)}, "
               f"top 10 labels={np.array(true_relevance)[np.argsort(pred_scores)[-10:][::-1]]}")
 
-    """计算 MRR, nDCG@k, Precision@k, Recall@k"""
+    """Compute MRR, nDCG@k, Precision@k, Recall@k"""
     true = np.array(true_relevance)
     pred = np.array(pred_scores)
 
@@ -88,7 +89,7 @@ def evaluate_ranking(true_relevance, pred_scores, k=10, query_idx=0):
         f'Recall@{k}': recall
     }
 
-# ==================== 关键词-文档评估器 ====================
+# ==================== Keyword-Document Evaluator ====================
 class KeywordRetrievalEvaluator:
     def __init__(
         self,
@@ -96,16 +97,16 @@ class KeywordRetrievalEvaluator:
         device='cuda',
         num_queries=20,
         num_negatives_per_query=100,
-        query_source='title',  # 'title' 或 'abstract'
+        query_source='title',  # 'title' or 'abstract'
         builder = None
     ):
         """
         Args:
-            dataset: RELISHDataset 实例
-            device: 设备
-            num_queries: 构造的查询数量
-            num_negatives_per_query: 每个查询的负样本数量
-            query_source: 查询文本来源 'title' 或 'abstract'
+            dataset: RELISHDataset instance
+            device: device
+            num_queries: number of constructed queries
+            num_negatives_per_query: number of negative samples per query
+            query_source: source of query text, 'title' or 'abstract'
         """
         self.dataset = dataset
         self.device = device
@@ -117,58 +118,58 @@ class KeywordRetrievalEvaluator:
         self.pmid_to_idx = {pid: i for i, pid in enumerate(self.pmids)}
         self.total_docs = len(self.pmids)
 
-        # 构建查询集：选择有足够相关文档的PMID
+        # Build query set: select PMIDs with enough relevant documents
         self._build_queries()
 
     def _build_queries(self):
-        """构建查询-文档对数据集"""
-        print("构建查询-文档对...")
+        """Build query-document pair dataset"""
+        print("Building query-document pairs...")
         rel_df = self.dataset.pairs
 
-        # 统计每个PMID的相关文档数量
+        # Count the number of relevant documents for each PMID
         pmid_to_relevant = {}
         for _, row in rel_df.iterrows():
             p1, p2, rel = row['PMID1'], row['PMID2'], row['Relevance']
-            if rel >= 1:  # 只考虑相关（1或2）
+            if rel >= 1:  # only consider relevant (1 or 2)
                 pmid_to_relevant.setdefault(p1, set()).add(p2)
                 pmid_to_relevant.setdefault(p2, set()).add(p1)
 
-        # 筛选有足够相关文档的PMID
+        # Filter PMIDs with enough relevant documents
         candidate_pmids = [p for p, rels in pmid_to_relevant.items() if len(rels) >= 2]
         if len(candidate_pmids) < self.num_queries:
-            print(f"警告: 只有 {len(candidate_pmids)} 个PMID有足够相关文档，将使用全部")
+            print(f"Warning: only {len(candidate_pmids)} PMIDs have enough relevant documents; using all of them")
             selected_pmids = candidate_pmids
         else:
             selected_pmids = random.sample(candidate_pmids, self.num_queries)
 
         self.query_pmids = selected_pmids
-        print(f"选择了 {len(self.query_pmids)} 个查询PMID")
+        print(f"Selected {len(self.query_pmids)} query PMIDs")
 
-        # 构建每个查询的正负样本
+        # Build positive and negative samples for each query
         self.query_data = []
         for q_pmid in self.query_pmids:
-            # 获取相关文档
+            # Get relevant documents
             relevant_pmids = list(pmid_to_relevant.get(q_pmid, set()))
             if len(relevant_pmids) < 1:
                 continue
 
-            # 采样负样本
+            # Sample negative documents
             all_other_pmids = [p for p in self.pmids if p != q_pmid and p not in relevant_pmids]
             if len(all_other_pmids) > self.num_negatives:
                 negative_pmids = random.sample(all_other_pmids, self.num_negatives)
             else:
                 negative_pmids = all_other_pmids
 
-            # 构造候选集 (正样本 + 负样本)
+            # Construct candidate set (positive + negative)
             candidate_pmids = relevant_pmids + negative_pmids
             candidate_indices = [self.pmid_to_idx[p] for p in candidate_pmids if p in self.pmid_to_idx]
 
-            # 构建真实相关性向量
+            # Build true relevance vector
             truth = np.zeros(len(candidate_indices))
             for i, pid in enumerate(candidate_pmids):
                 if pid in relevant_pmids:
-                    # 检查相关性分数（0/1/2）
-                    score = 1  # 默认为1
+                    # Check relevance score (0/1/2)
+                    score = 1  # default to 1
                     for _, row in rel_df.iterrows():
                         if (row['PMID1'] == q_pmid and row['PMID2'] == pid) or \
                            (row['PMID1'] == pid and row['PMID2'] == q_pmid):
@@ -176,11 +177,11 @@ class KeywordRetrievalEvaluator:
                             break
                     truth[i] = score
 
-            # 获取查询文本
+            # Get query text
             if self.query_source == 'title':
                 raw = self.dataset.pmid_to_doc[q_pmid]['title_readable']
-                # 添加 MeSH ID（与训练一致）
-                mesh_ids = self.builder.extract_mesh_ids(raw)  # 需要 builder 实例
+                # Add MeSH IDs (consistent with training)
+                mesh_ids = self.builder.extract_mesh_ids(raw)  # requires builder instance
                 if mesh_ids:
                     mesh_str = ' '.join(mesh_ids[:5])
                     query_text = f"{raw} {mesh_str}"
@@ -197,26 +198,26 @@ class KeywordRetrievalEvaluator:
                 'truth': truth
             })
         print(f"Query {q_pmid}: relevant={len(relevant_pmids)}, negatives={len(negative_pmids)}, total={len(candidate_pmids)}")
-        print(f"成功构建 {len(self.query_data)} 个查询-文档对")
-        # 打印统计信息
+        print(f"Successfully built {len(self.query_data)} query-document pairs")
+        # Print statistics
         for qd in self.query_data:
             pos_count = np.sum(qd['truth'] >= 1)
-            print(f"查询 {qd['query_pmid']}: 正样本 {pos_count}, 负样本 {len(qd['truth']) - pos_count}")
+            print(f"Query {qd['query_pmid']}: positive samples {pos_count}, negative samples {len(qd['truth']) - pos_count}")
 
     def evaluate_bm25(self, k=10):
-        print("运行 BM25 关键词检索 ...")
-        # 构建全量文档的BM25索引
+        print("Running BM25 keyword retrieval ...")
+        # Build BM25 index for all documents
         doc_texts = [clean_text(self.dataset.pmid_to_doc[pid]['full_readable']) for pid in self.pmids]
         tokenized_docs = [word_tokenize(doc.lower()) for doc in doc_texts]
         bm25 = BM25Okapi(tokenized_docs)
 
         all_metrics = []
-        for q_data in tqdm(self.query_data, desc="BM25查询"):
+        for q_data in tqdm(self.query_data, desc="BM25 queries"):
             query_text = q_data['query_text']
             query_tokens = word_tokenize(query_text.lower())
-            # 对所有文档打分
+            # Score all documents
             all_scores = bm25.get_scores(query_tokens)
-            # 只提取候选文档的分数
+            # Extract scores only for candidate documents
             scores = [all_scores[idx] for idx in q_data['candidate_indices']]
             truth = q_data['truth']
             metrics = evaluate_ranking(truth, scores, k=k)
@@ -226,16 +227,16 @@ class KeywordRetrievalEvaluator:
         return avg_metrics
 
     def evaluate_dense(self, model_name='all-MiniLM-L6-v2', k=10):
-        print(f"运行稠密检索 ({model_name}) ...")
+        print(f"Running dense retrieval ({model_name}) ...")
         model = SentenceTransformer(model_name, device=self.device)
 
-        # 编码所有文档
-        print("编码文档...")
+        # Encode all documents
+        print("Encoding documents...")
         doc_texts = [clean_text(self.dataset.pmid_to_doc[pid]['full_readable']) for pid in self.pmids]
         doc_embeddings = model.encode(doc_texts, show_progress_bar=True, convert_to_tensor=True)
 
         all_metrics = []
-        for q_data in tqdm(self.query_data, desc="稠密查询"):
+        for q_data in tqdm(self.query_data, desc="Dense queries"):
             query_text = q_data['query_text']
             query_emb = model.encode(query_text, convert_to_tensor=True)
             all_scores = torch.nn.functional.cosine_similarity(query_emb.unsqueeze(0), doc_embeddings, dim=1).cpu().numpy()
@@ -248,13 +249,13 @@ class KeywordRetrievalEvaluator:
         return avg_metrics
 
     def evaluate_cross_encoder(self, model_name='cross-encoder/ms-marco-MiniLM-L-6-v2', k=10):
-        print(f"运行交叉编码器 ({model_name}) ...")
+        print(f"Running cross-encoder ({model_name}) ...")
         cross_encoder = CrossEncoder(model_name, device=self.device)
 
         all_metrics = []
-        for q_data in tqdm(self.query_data, desc="交叉编码器查询"):
+        for q_data in tqdm(self.query_data, desc="Cross-encoder queries"):
             query_text = q_data['query_text']
-            # 只对候选文档重排
+            # Rerank only candidate documents
             candidate_texts = [
                 clean_text(self.dataset.pmid_to_doc[pid]['full_readable'])
                 for pid in q_data['candidate_pmids']
@@ -269,7 +270,7 @@ class KeywordRetrievalEvaluator:
         return avg_metrics
 
     def evaluate_your_model(self, model_path, builder, k=10):
-        print("运行超图GNN模型关键词检索...")
+        print("Running hypergraph GNN model keyword retrieval...")
         model = HypergraphGNNScorer(node_feat_dim=200, hidden_dim=128)
         model.load_state_dict(torch.load(model_path, map_location=self.device))
         model.to(self.device)
@@ -285,7 +286,7 @@ class KeywordRetrievalEvaluator:
                 return torch.zeros(200, dtype=torch.float32)
 
         all_metrics = []
-        for q_data in tqdm(self.query_data, desc="超图GNN查询"):
+        for q_data in tqdm(self.query_data, desc="Hypergraph GNN queries"):
             query_text = q_data['query_text']
             query_emb = get_query_embedding(query_text).unsqueeze(0).to(self.device)
             scores = []
@@ -297,7 +298,7 @@ class KeywordRetrievalEvaluator:
                 edge_idx = hypergraph['edge_index'].to(self.device)
                 with torch.no_grad():
                     logits = model(node_feat, edge_idx, query_emb, batch=None)
-                    # 使用 logits 排序（不经过sigmoid）
+                    # Use logits for ranking (without sigmoid)
                     score = logits.item()
                 scores.append(score)
 
@@ -308,28 +309,28 @@ class KeywordRetrievalEvaluator:
         avg_metrics = {m: np.mean([d[m] for d in all_metrics]) for m in all_metrics[0].keys()}
         return avg_metrics
 
-# ==================== 主程序 ====================
+# ==================== Main program ====================
 def main():
-    parser = argparse.ArgumentParser(description="关键词-文档检索评估")
+    parser = argparse.ArgumentParser(description="Keyword-document retrieval evaluation")
     parser.add_argument("--npy_path", default="./train_annotated.npy")
     parser.add_argument("--relevance_path", default="./relevance_matrix.tsv")
     parser.add_argument("--mesh_xml", default="./desc2026.xml")
     parser.add_argument("--model_path", default="./model/best_mini_model.pth")
     parser.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     parser.add_argument("--k", type=int, default=10)
-    parser.add_argument("--num_queries", type=int, default=20, help="查询数量")
-    parser.add_argument("--num_negatives", type=int, default=100, help="每个查询的负样本数")
+    parser.add_argument("--num_queries", type=int, default=20, help="number of queries")
+    parser.add_argument("--num_negatives", type=int, default=100, help="number of negative samples per query")
     parser.add_argument("--query_source", type=str, default="title", choices=["title", "abstract"],
-                        help="查询文本来源")
+                        help="source of query text")
     parser.add_argument("--split", type=str, default="test", choices=["train", "val", "test"],
-    help="使用数据集的哪个划分")
+    help="which split of the dataset to use")
     parser.add_argument("--skip_bm25", action="store_true")
     parser.add_argument("--skip_dense", action="store_true")
     parser.add_argument("--skip_cross", action="store_true")
     parser.add_argument("--skip_your", action="store_true")
     args = parser.parse_args()
 
-    print("加载RELISH数据集...")
+    print("Loading RELISH dataset...")
     dataset = RELISHDataset(
         npy_path=args.npy_path,
         relevance_path=args.relevance_path,
@@ -337,8 +338,8 @@ def main():
         split=args.split,
         normalize_labels=False
     )
-    print(f"文档总数: {len(dataset.pmid_to_doc)}")
-    print(f"相关性对: {len(dataset.pairs)}")
+    print(f"Total documents: {len(dataset.pmid_to_doc)}")
+    print(f"Relevance pairs: {len(dataset.pairs)}")
     builder = HypergraphBuilder()
     evaluator = KeywordRetrievalEvaluator(
         dataset,
@@ -362,7 +363,7 @@ def main():
 
     if results:
         print("\n" + "="*80)
-        print(f"关键词-文档检索评估结果 (k={args.k}, {args.num_queries}个查询):")
+        print(f"Keyword-document retrieval evaluation results (k={args.k}, {args.num_queries} queries):")
         print("="*80)
         header = ["Model"] + list(next(iter(results.values())).keys())
         rows = [[name] + [f"{metrics[m]:.4f}" for m in metrics.keys()] for name, metrics in results.items()]
@@ -374,9 +375,9 @@ def main():
             print(fmt.format(*row))
         print("="*80)
         pd.DataFrame([{'Model': name, **metrics} for name, metrics in results.items()]).to_csv('keyword_retrieval_results.csv', index=False)
-        print("结果已保存到 keyword_retrieval_results.csv")
+        print("Results saved to keyword_retrieval_results.csv")
     else:
-        print("没有成功完成任何评估。")
+        print("No evaluation was completed successfully.")
 
 if __name__ == "__main__":
     main()
