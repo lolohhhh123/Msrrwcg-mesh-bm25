@@ -1,7 +1,7 @@
 """
 train_triplet_query_doc_precompute.py
-预计算所有三元组的特征，训练极速版。
-使用新版 hypergraph_builder 的 doc_cache 加速，并支持多进程并行和断点续传。
+Precompute features for all triplets.
+Uses the hypergraph_builder's doc_cache, and supports multiprocessing parallelism and resumption from checkpoints.
 """
 
 import torch
@@ -34,7 +34,7 @@ def get_query_embedding(builder, query_text, query_mesh_ids=None, dim=200):
             return np.mean(vecs, axis=0).astype(np.float32)
     return builder._hash_text_to_vector(query_text.lower(), dim)
 
-# ========== 验证函数 ==========
+# ========== Validation function ==========
 def evaluate_on_val(model, val_loader, device):
     model.eval()
     correct = 0
@@ -67,7 +67,7 @@ def evaluate_on_val(model, val_loader, device):
 
     return correct / total if total > 0 else 0.0
 
-# ========== 数据集 ==========
+# ========== Dataset ==========
 class PrecomputedTripletDataset(Dataset):
     def __init__(self, base_dataset, builder, num_negatives=5, query_source='title',
                  precompute_dir='./precomputed_triplets', num_workers=8, batch_size_precompute=10000):
@@ -80,13 +80,13 @@ class PrecomputedTripletDataset(Dataset):
         self.num_workers = num_workers
         self.batch_size_precompute = batch_size_precompute
 
-        # 构建三元组元数据
+        # Build triplet metadata
         self._build_triplets()
 
-        # 构建文档缓存（使用新版 builder 的 precompute_doc_cache）
+        # Build document cache (using the new builder's precompute_doc_cache)
         self.doc_cache = self._build_doc_cache()
 
-        # 预计算三元组特征（并行 + 断点续传）
+        # Precompute triplet features (parallel + resumable)
         self.data = self._precompute_features_parallel()
 
     def _build_triplets(self):
@@ -123,106 +123,106 @@ class PrecomputedTripletDataset(Dataset):
                         'pos_pmid': pos_pmid,
                         'neg_pmid': neg_pmid
                     })
-        print(f"构建了 {len(self.triplet_meta)} 个三元组")
+        print(f"Built {len(self.triplet_meta)} triplets")
 
     def _build_doc_cache(self):
-        """使用新版 builder.precompute_doc_cache 预计算所有文档的缓存"""
+        """Precompute cache for all documents using the new builder.precompute_doc_cache"""
         cache_file = self.precompute_dir / 'doc_cache_full.pkl'
         if cache_file.exists():
-            print("加载文档缓存...")
+            print("Loading document cache...")
             with open(cache_file, 'rb') as f:
                 return pickle.load(f)
 
-        print("构建文档缓存（首次运行，约需1-2小时，但仅一次）...")
+        print("Building document cache (first run, takes about 1-2 hours, but only once)...")
         doc_cache = {}
-        max_chars = 1500  # 截断到安全长度
+        max_chars = 1500  # truncate to safe length
         skipped = 0
         for pid, doc_info in tqdm(self.pmid_to_doc.items(), desc="Caching docs"):
             try:
                 text = doc_info['full_readable']
                 if len(text) > max_chars:
-                    text = text[:max_chars]  # 截断
+                    text = text[:max_chars]  # truncate
                 doc_cache[pid] = self.builder.precompute_doc_cache(text)
             except Exception as e:
-                print(f"警告: 跳过文档 {pid}，错误: {e}")
+                print(f"Warning: skipping document {pid}, error: {e}")
                 skipped += 1
                 continue
-        print(f"缓存完成，跳过了 {skipped} 个文档")
+        print(f"Cache completed, skipped {skipped} documents")
         with open(cache_file, 'wb') as f:
             pickle.dump(doc_cache, f)
-        print("文档缓存完成")
+        print("Document cache complete")
         return doc_cache
 
-    # ---------- 并行处理 ----------
+    # ---------- Parallel processing ----------
     @staticmethod
     def _process_batch(batch_data, precompute_dir, cooccurrence_path):
         import time
         pid = os.getpid()
-        print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 子进程开始处理批次", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Child process started processing batch", flush=True)
 
-        # 加载 builder
+        # Load builder
         if not hasattr(PrecomputedTripletDataset._process_batch, 'builder'):
-            print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 正在创建 HypergraphBuilder...", flush=True)
+            print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Creating HypergraphBuilder...", flush=True)
             PrecomputedTripletDataset._process_batch.builder = HypergraphBuilder(
                 cooccurrence_path=cooccurrence_path
             )
-            print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] HypergraphBuilder 创建完成", flush=True)
+            print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] HypergraphBuilder creation complete", flush=True)
 
-        # 加载 doc_cache（独立加载）
+        # Load doc_cache (independently)
         if not hasattr(PrecomputedTripletDataset._process_batch, 'doc_cache'):
-            print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 正在加载文档缓存...", flush=True)
+            print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Loading document cache...", flush=True)
             cache_path = Path(precompute_dir) / 'doc_cache_full.pkl'
             with open(cache_path, 'rb') as f:
                 PrecomputedTripletDataset._process_batch.doc_cache = pickle.load(f)
-            print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 文档缓存加载完成", flush=True)
+            print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Document cache loading complete", flush=True)
 
         builder = PrecomputedTripletDataset._process_batch.builder
         doc_cache = PrecomputedTripletDataset._process_batch.doc_cache
         nlp = builder.nlp
 
-        print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 开始处理 {len(batch_data)} 个三元组", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Starting to process {len(batch_data)} triplets", flush=True)
         results = []
         for idx, meta in enumerate(batch_data):
             if idx == 1:
-                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 已处理 {idx}/{len(batch_data)} 个三元组", flush=True)                
+                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Processed {idx}/{len(batch_data)} triplets", flush=True)                
             if idx % 1000 == 0:
-                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 已处理 {idx}/{len(batch_data)} 个三元组", flush=True)
+                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Processed {idx}/{len(batch_data)} triplets", flush=True)
 
             q_text = meta['query_text']
             pos_pmid = meta['pos_pmid']
             neg_pmid = meta['neg_pmid']
 
-            # 查询嵌入
+            # Query embedding
             try:
-                print(f"...查询嵌入开始", flush=True)
-                # 提取 query 的 MeSH
+                print(f"...Query embedding start", flush=True)
+                # Extract MeSH for query
                 query_mesh_ids = builder.extract_mesh_ids(q_text) if q_text else []
                 q_emb_np = get_query_embedding(builder, q_text, query_mesh_ids)
                 q_emb = torch.tensor(q_emb_np, dtype=torch.float32)
-                print(f"...查询嵌入完成 (mesh_count={len(query_mesh_ids)})", flush=True)
+                print(f"...Query embedding complete (mesh_count={len(query_mesh_ids)})", flush=True)
 
-                # 构建正文档超图
-                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 构建正文档超图 (pos_pmid={pos_pmid}) 开始", flush=True)
+                # Build positive document hypergraph
+                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Building positive document hypergraph (pos_pmid={pos_pmid}) start", flush=True)
                 pos_hg = builder.build_hypergraph(
                     document_text=None,
                     query_text=q_text,
                     include_mesh=True,
                     doc_cache=doc_cache[pos_pmid]
                 )
-                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 正文档超图构建完成", flush=True)
+                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Positive document hypergraph construction complete", flush=True)
 
-                # 构建负文档超图
-                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 构建负文档超图 (neg_pmid={neg_pmid}) 开始", flush=True)
+                # Build negative document hypergraph
+                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Building negative document hypergraph (neg_pmid={neg_pmid}) start", flush=True)
                 neg_hg = builder.build_hypergraph(
                     document_text=None,
                     query_text=q_text,
                     include_mesh=True,
                     doc_cache=doc_cache[neg_pmid]
                 )
-                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 负文档超图构建完成", flush=True)
+                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Negative document hypergraph construction complete", flush=True)
 
             except Exception as e:
-                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 构建超图失败: {e}", flush=True)
+                print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Failed to build hypergraph: {e}", flush=True)
                 continue
 
             results.append({
@@ -233,22 +233,22 @@ class PrecomputedTripletDataset(Dataset):
                 'neg_edge_idx': neg_hg['edge_index']
             })
 
-        print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] 批次处理完成，共 {len(results)} 个结果", flush=True)
+        print(f"[{time.strftime('%H:%M:%S')}][PID {pid}] Batch processing complete, total {len(results)} results", flush=True)
         return results
 
     def _precompute_features_parallel(self):
-        """并行预计算，支持断点续传"""
+        """Parallel precomputation, supports resumption from checkpoints"""
         final_file = self.precompute_dir / f'triplet_features_{len(self.triplet_meta)}.pth'
         if final_file.exists():
-            print(f"从最终缓存加载: {final_file}")
+            print(f"Loading from final cache: {final_file}")
             return torch.load(final_file, map_location='cpu')
 
-        # 检查已完成的批次
+        # Check completed batches
         completed_batches = []
         batch_pattern = f'triplet_batch_*_of_{len(self.triplet_meta)}.pkl'
         batch_files = sorted(self.precompute_dir.glob(batch_pattern))
         if batch_files:
-            print(f"发现 {len(batch_files)} 个已完成批次，将从中断处继续...")
+            print(f"Found {len(batch_files)} completed batches, will resume from interruption...")
             for f in batch_files:
                 parts = f.stem.split('_')
                 if len(parts) >= 4:
@@ -268,23 +268,23 @@ class PrecomputedTripletDataset(Dataset):
 
         total = len(self.triplet_meta)
         if start_idx >= total:
-            print("所有批次已完成，正在合并...")
+            print("All batches completed, merging...")
             return self._merge_batches()
 
-        print(f"从索引 {start_idx} 继续（共 {total} 个三元组）...")
+        print(f"Resuming from index {start_idx} (total {total} triplets)...")
 
-        # 准备批次
+        # Prepare batches
         batch_size = self.batch_size_precompute
         batches = []
         for i in range(start_idx, total, batch_size):
             end = min(i + batch_size, total)
             batches.append(self.triplet_meta[i:end])
 
-        # 并行处理
-        print(f"启动 {self.num_workers} 个进程，共 {len(batches)} 个批次...")
-        cooccurrence_path = self.builder.cooccurrence_path  # 传递给子进程
+        # Parallel processing
+        print(f"Starting {self.num_workers} processes, total {len(batches)} batches...")
+        cooccurrence_path = self.builder.cooccurrence_path  # pass to child processes
 
-        # 使用 partial 固定参数
+        # Use partial to fix parameters
         func = partial(
             self._process_batch,
             precompute_dir=self.precompute_dir,
@@ -292,7 +292,7 @@ class PrecomputedTripletDataset(Dataset):
         )
 
         pool = mp.Pool(processes=self.num_workers)
-        # 使用 imap 逐步获取结果
+        # Use imap to get results incrementally
         for i, result in enumerate(tqdm(
             pool.imap(func, batches),
             total=len(batches),
@@ -300,22 +300,22 @@ class PrecomputedTripletDataset(Dataset):
         )):
             if result is None:
                 continue
-            # 保存批次
+            # Save batch
             start_idx_batch = start_idx + i * batch_size
             end_idx_batch = min(start_idx_batch + batch_size, total)
             batch_file = self.precompute_dir / f'triplet_batch_{start_idx_batch}_{end_idx_batch}.pkl'
             with open(batch_file, 'wb') as f:
                 pickle.dump(result, f)
-            print(f"批次 {start_idx_batch}-{end_idx_batch} 已保存")
+            print(f"Batch {start_idx_batch}-{end_idx_batch} saved")
         pool.close()
         pool.join()
 
-        # 合并所有批次
+        # Merge all batches
         return self._merge_batches()
 
     def _merge_batches(self):
-        """合并所有批次文件"""
-        print("合并所有批次...")
+        """Merge all batch files"""
+        print("Merging all batches...")
         all_data = []
         batch_pattern = f'triplet_batch_*_of_{len(self.triplet_meta)}.pkl'
         batch_files = sorted(self.precompute_dir.glob(batch_pattern))
@@ -323,11 +323,11 @@ class PrecomputedTripletDataset(Dataset):
             with open(f, 'rb') as file:
                 data = pickle.load(file)
                 all_data.extend(data)
-            # 可选：删除批次文件以节省空间
+            # Optional: delete batch files to save space
             # os.remove(f)
         final_file = self.precompute_dir / f'triplet_features_{len(self.triplet_meta)}.pth'
         torch.save(all_data, final_file)
-        print(f"合并完成，保存至 {final_file}")
+        print(f"Merge complete, saved to {final_file}")
         return all_data
 
     def __len__(self):
@@ -336,7 +336,7 @@ class PrecomputedTripletDataset(Dataset):
     def __getitem__(self, idx):
         return self.data[idx]
 
-# ========== Collate 函数 ==========
+# ========== Collate function ==========
 def collate_triplet_precomputed(batch):
     q_embs = torch.stack([item['q_emb'] for item in batch])
     pos_node_feats = [item['pos_node_feat'] for item in batch]
@@ -351,7 +351,7 @@ def collate_triplet_precomputed(batch):
         'neg_edge_indices': neg_edge_indices
     }
 
-# ========== 训练函数 ==========
+# ========== Training function ==========
 def train_model(train_loader, val_loader, model, optimizer, scheduler, criterion, device, epochs, patience=5):
     best_val_mrr = 0.0
     patience_counter = 0
@@ -420,7 +420,7 @@ def train_model(train_loader, val_loader, model, optimizer, scheduler, criterion
         model.load_state_dict(best_model_state)
     return model
 
-# ========== 主程序 ==========
+# ========== Main program ==========
 def main():
     try:
         mp.set_start_method('spawn', force=True)
@@ -439,7 +439,7 @@ def main():
     parser.add_argument("--batch_precompute", type=int, default=10000)
     args = parser.parse_args()
 
-    print("加载数据集...")
+    print("Loading dataset...")
     dataset = RELISHDataset(
         npy_path=args.npy_path,
         relevance_path=args.relevance_path,
@@ -449,7 +449,7 @@ def main():
     )
     builder = HypergraphBuilder(cooccurrence_path="./mesh_cooccurrence.pkl")
 
-    # 预计算数据集（并行+断点续传）
+    # Precompute dataset (parallel + resumable)
     train_dataset = PrecomputedTripletDataset(
         dataset, builder,
         num_negatives=args.num_negatives,
@@ -461,7 +461,7 @@ def main():
     train_size = int(0.9 * len(train_dataset))
     val_size = len(train_dataset) - train_size
     train_subset, val_subset = torch.utils.data.random_split(train_dataset, [train_size, val_size])
-    print(f"训练集: {train_size}, 验证集: {val_size}")
+    print(f"Train set: {train_size}, Val set: {val_size}")
 
     train_loader = DataLoader(train_subset, batch_size=args.batch_size, shuffle=True,
                               collate_fn=collate_triplet_precomputed, num_workers=0, pin_memory=True)
@@ -481,7 +481,7 @@ def main():
 
     save_path = f"./model/{args.model_prefix}_model.pth"
     torch.save(trained_model.state_dict(), save_path)
-    print(f"模型已保存到 {save_path}")
+    print(f"Model saved to {save_path}")
 
 if __name__ == "__main__":
     main()
