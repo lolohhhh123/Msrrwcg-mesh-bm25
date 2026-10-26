@@ -1,8 +1,8 @@
 """
 precompute_ai_ad_features.py
-为 AI+AD 语料预计算超图特征。
-使用全 PubMed 共现矩阵初始化 MeSH 节点特征，
-用 corpus 自身的 title 作为 query。
+Precomputes hypergraph features for the AI+AD corpus.
+MeSH node features are initialized using the full-PubMed co-occurrence matrix,
+and each document's own title is used as the query.
 """
 
 import json
@@ -12,9 +12,9 @@ from tqdm import tqdm
 from hypergraph_builder import HypergraphBuilder
 
 def main():
-    corpus_path = "/home/hong/GNN/ai_ad/ai_ad_corpus_fixed.jsonl"
-    out_path = "/home/hong/GNN/ai_ad/ai_ad_doc_features.pkl"
-    cooc_path = "/home/hong/GNN/mesh_cooccurrence.pkl"  # 改成你实际的路径
+    corpus_path = "./ai_ad/ai_ad_corpus_fixed.jsonl"  # change to your actual path
+    out_path = "./ai_ad/ai_ad_doc_features.pkl"       # change to your actual path
+    cooc_path = "./mesh_cooccurrence.pkl"             # change to your actual path
 
     builder = HypergraphBuilder(cooccurrence_path=cooc_path)
 
@@ -34,7 +34,7 @@ def main():
         query_text = d.get("title") or ""
 
         if not text.strip():
-            # 存空超图，保证 pmid 不缺失
+            # Store an empty hypergraph so that the pmid is never missing
             import torch
             doc_features[pmid] = {
             "node_features": torch.zeros((1, 200)),
