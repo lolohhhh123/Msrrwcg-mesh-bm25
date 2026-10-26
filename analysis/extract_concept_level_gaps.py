@@ -1,7 +1,7 @@
 """
 extract_concept_level_gaps.py
-从三路 ranking 的 divergence 提取 concept-level MeSH pair gaps，
-并与 Mine the Gap! 的 25 个缺口对比。
+Extracts concept-level MeSH pair gaps from the divergence between the three
+ranking signals, and compares them against the 25 gaps from Mine the Gap!.
 """
 import json
 import numpy as np
@@ -15,15 +15,15 @@ from evaluate_baselines import clean_text
 
 
 def normalize_name(s):
-    """MeSH 名称标准化，用于字符串对比"""
+    """Normalize a MeSH name for string comparison"""
     return s.lower().replace(" ", "").replace(",", "").replace("-", "").strip()
 
 
 def load_mine_the_gap(tsv_path, name_to_meshid):
     """
-    读取 Mine the Gap! 的 25 个 pair，
-    用 name_to_meshid 映射把名称转成 meshd ID。
-    返回 set of frozenset({meshd_i, meshd_j})。
+    Read the 25 pairs from Mine the Gap!,
+    and use name_to_meshid to map the names to meshd IDs.
+    Returns a set of frozenset({meshd_i, meshd_j}).
     """
     pairs = set()
     unmapped = []
@@ -48,17 +48,17 @@ def load_mine_the_gap(tsv_path, name_to_meshid):
 
 
 def main():
-    corpus_path = "/home/hong/GNN/ai_ad/ai_ad_corpus_fixed.jsonl"
+    corpus_path = "./ai_ad/ai_ad_corpus_fixed.jsonl"
     mine_the_gap_path = "mine_the_gap_pairs.tsv"
     output_path = "concept_level_gaps.json"
-    cooc_path = "/home/hong/GNN/mesh_cooccurrence.pkl"
+    cooc_path = "./mesh_cooccurrence.pkl"
 
     top_k = 20
-    min_expected = 3.0        # 放宽到 3.0，抓更多候选
+    min_expected = 3.0        # Relaxed to 3.0 to capture more candidates
     max_observed = 2
     min_doc_freq = 3
 
-    # 1. 加载语料
+    # 1. Load corpus
     docs = []
     with open(corpus_path, "r", encoding="utf-8") as f:
         for line in f:
@@ -67,7 +67,7 @@ def main():
     doc_mesh_list = [d["mesh"] for d in docs]
     N = len(docs)
 
-    # 2. 构建 MeSH 词表和共现矩阵
+    # 2. Build MeSH vocabulary and co-occurrence matrix
     mesh_sets = [set(m) for m in doc_mesh_list]
     vocab = sorted({m for s in mesh_sets for m in s})
     mesh_to_idx = {m: i for i, m in enumerate(vocab)}
@@ -81,12 +81,12 @@ def main():
             for j in idxs:
                 cooc[i, j] += 1
 
-    # 3. 建 name_to_meshid 映射（用于 Mine the Gap! 对比）
+    # 3. Build name_to_meshid mapping (for Mine the Gap! comparison)
     print("Building MeSH name -> ID mapping from desc2026.xml...")
     builder = HypergraphBuilder(cooccurrence_path=cooc_path)
     name_to_meshid = {}
     for meshd_id, name in builder.mesh_translator.mapping.items():
-        # meshd_id 形如 "MESHD000544" 或 "meshd000544"
+        # meshd_id looks like "MESHD000544" or "meshd000544"
         if not isinstance(meshd_id, str):
             continue
         mid = meshd_id.lower()
@@ -94,7 +94,7 @@ def main():
             name_to_meshid[normalize_name(name)] = mid
     print(f"  Built {len(name_to_meshid)} name -> ID entries")
 
-    # 4. 加载 Mine the Gap! 的 25 个 pair
+    # 4. Load the 25 pairs from Mine the Gap!
     mine_the_gap_set, unmapped = load_mine_the_gap(mine_the_gap_path, name_to_meshid)
     print(f"Mine the Gap! pairs loaded: {len(mine_the_gap_set)}")
     if unmapped:
@@ -107,7 +107,7 @@ def main():
                  for d in docs]
     bm25 = BM25Okapi(tokenized)
 
-    # 6. Cooc 打分
+    # 6. Cooc scoring
     def cooc_scores(q_mesh):
         q_idx = [mesh_to_idx[m] for m in q_mesh if m in mesh_to_idx]
         if not q_idx:
@@ -121,7 +121,7 @@ def main():
             scores[k] = overlap / (len(q_idx) + 1e-8)
         return scores
 
-    # 7. 对每个 query，找 BM25-only 文档中的 MeSH pair
+    # 7. For each query, find MeSH pairs in BM25-only documents
     queries = [d for d in docs if len(d["mesh"]) >= 3][:50]
     gap_doc_support = defaultdict(set)
     gap_query_support = defaultdict(set)
@@ -149,7 +149,7 @@ def main():
                     gap_doc_support[pair].add(doc_pmid)
                     gap_query_support[pair].add(qi)
 
-    # 8. 过滤
+    # 8. Filtering
     candidate_gaps = []
     for pair, doc_set in gap_doc_support.items():
         pair = tuple(sorted(pair))
@@ -162,11 +162,11 @@ def main():
 
         if expected >= min_expected and observed <= max_observed \
            and len(doc_set) >= min_doc_freq:
-            # 查是否在 Mine the Gap! 结果中
+            # Check whether it is in the Mine the Gap! results
             pair_key = frozenset([pair[0], pair[1]])
             in_mtg = pair_key in mine_the_gap_set
 
-            # 翻译 MeSH 名称（用 builder 的 mapping）
+            # Translate MeSH names (using builder's mapping)
             name1 = builder.mesh_translator.mapping.get(pair[0].upper(), pair[0])
             name2 = builder.mesh_translator.mapping.get(pair[1].upper(), pair[1])
 
@@ -185,11 +185,11 @@ def main():
 
     candidate_gaps.sort(key=lambda x: -x["expected_cooc"])
 
-    # 9. 输出
+    # 9. Output
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(candidate_gaps, f, indent=2, ensure_ascii=False)
 
-    # 10. 统计
+    # 10. Statistics
     total = len(candidate_gaps)
     in_mtg = sum(1 for g in candidate_gaps if g["in_mine_the_gap"])
     new_gaps = total - in_mtg
